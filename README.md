@@ -31,6 +31,10 @@ Example use-cases:
    - Immediately, the CSV data is realized as a bar chart under `earthquakes/plot.bar.svg/2018-01-01.csv.svg` and a pie chart under `earthquakes/plot.pie.svg/2018-01-01.csv.svg` in SVG format
    - There could be an intermediate folder like `earthquakes/viz/<name>` that would capture common operations or settings across multiple folders (e.g., to limit which fields in a data set are to be used, set graph options, etc.)
 
+## History
+
+[Kintampo](https://en.wikipedia.org/wiki/Kintampo_waterfalls) is a large multi-step waterfall in Ghana.
+
 ## License
 
 Copyright 2018 Daniel Gregoire
