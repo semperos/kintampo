@@ -1,10 +1,14 @@
 extern crate clap;
 extern crate kintampo_client;
+#[macro_use] extern crate log;
+extern crate pretty_env_logger;
 extern crate zmq;
 
 use clap::{App, Arg};
 
 fn main() {
+    pretty_env_logger::init();
+
     let matches = App::new("kintampo-client")
         .version("0.1.0")
         .author("Daniel Gregoire <daniel.l.gregoire@gmail.com>")
@@ -25,31 +29,18 @@ fn main() {
         kintampo_client::example(None);
     }
 
-    // println!("Connecting to hello world server...\n");
-
-    // let context = zmq::Context::new();
-    // let requester = context.socket(zmq::REQ).unwrap();
-
-    // assert!(requester.connect("tcp://localhost:5555").is_ok());
-
-    // let mut msg = zmq::Message::new().unwrap();
-
-    // for request_nbr in 0..10 {
-    //     println!("Sending Hello {}...", request_nbr);
-    //     requester.send(b"Hello", 0).unwrap();
-
-    //     requester.recv(&mut msg, 0).unwrap();
-    //     println!("Received World {}: {}", msg.as_str().unwrap(), request_nbr);
-    // }
-
     let context = zmq::Context::new();
     let subscriber = context.socket(zmq::SUB).unwrap();
+    info!("Subscribing to CREATE and WRITE messages from Kintampo server...");
     subscriber
-        .connect("tcp://localhost:5563")
+        .connect("tcp://localhost:55630")
         .expect("failed connecting subscriber");
     subscriber
-        .set_subscribe(b"B")
-        .expect("failed subscribing");
+        .set_subscribe(b"CREATE")
+        .expect("failed subscribing to CREATE");
+    subscriber
+        .set_subscribe(b"WRITE")
+        .expect("failed subscribing to WRITE");
 
     loop {
         let envelope = subscriber
@@ -60,6 +51,6 @@ fn main() {
             .recv_string(0)
             .expect("failed receiving message")
             .unwrap();
-        println!("[{}] {}", envelope, message);
+        info!("[{}] {}", envelope, message);
     }
 }

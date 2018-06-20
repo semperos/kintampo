@@ -14,5 +14,7 @@ path="src/main.rs"
 
 [dependencies]
 clap = "2.31"
+log = "0.4"
 notify = "4.0.0"
+pretty_env_logger = "0.2"
 zmq = "0.8"
