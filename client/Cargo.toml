@@ -1,0 +1,17 @@
+[package]
+name = "kintampo-client"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["Daniel Gregoire <daniel.l.gregoire@gmail.com>"]
+
+[lib]
+name="kintampo_client"
+path="src/lib.rs"
+
+[[bin]]
+name="kintampo_client"
+path="src/main.rs"
+
+[dependencies]
+clap = "2.31"
+zmq = "0.8"

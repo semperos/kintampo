@@ -1,0 +1,18 @@
+[package]
+name = "kintampo-server"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["Daniel Gregoire <daniel.l.gregoire@gmail.com>"]
+
+[lib]
+name="kintampo_server"
+path="src/lib.rs"
+
+[[bin]]
+name="kintampo_server"
+path="src/main.rs"
+
+[dependencies]
+clap = "2.31"
+notify = "4.0.0"
+zmq = "0.8"
