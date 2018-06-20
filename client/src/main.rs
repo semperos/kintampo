@@ -13,21 +13,7 @@ fn main() {
         .version("0.1.0")
         .author("Daniel Gregoire <daniel.l.gregoire@gmail.com>")
         .about("Kintampo client")
-        .arg(
-            Arg::with_name("example_arg")
-                .short("e")
-                .long("example")
-                .value_name("EXAMPLE_INTEGER_VALUE")
-                .required(false)
-                .help("An example command-line argument.")
-        )
         .get_matches();
-
-    if let Some(example_value) = matches.value_of("example_arg") {
-        kintampo_client::example(Some(example_value.parse::<i32>().unwrap()));
-    } else {
-        kintampo_client::example(None);
-    }
 
     let context = zmq::Context::new();
     let subscriber = context.socket(zmq::SUB).unwrap();

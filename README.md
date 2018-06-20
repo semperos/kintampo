@@ -31,9 +31,14 @@ Example use-cases:
    - Immediately, the CSV data is realized as a bar chart under `earthquakes/plot.bar.svg/2018-01-01.csv.svg` and a pie chart under `earthquakes/plot.pie.svg/2018-01-01.csv.svg` in SVG format
    - There could be an intermediate folder like `earthquakes/viz/<name>` that would capture common operations or settings across multiple folders (e.g., to limit which fields in a data set are to be used, set graph options, etc.)
 
-## History
+## Background
 
 [Kintampo](https://en.wikipedia.org/wiki/Kintampo_waterfalls) is a large multi-step waterfall in Ghana.
+
+## In Progress
+
+-[ ] Consider how the server should publish file system changes at the ZMQ level: just raw path, canonical hierarchial representation of the file/directory changed, separate messages for each node in that hierarchy or just one node (in which case likely want an "interface component" responsible for exploding that one message into many so that clients can be completely decoupled from one another)
+-[ ] Consider the parent-child vs child-parent vs. cross-cutting subscriptions data flow. If a client is subscribed to messages for a given directory, should that client have to go up any directories to find things like common config options meant to be shared by sibling directories? Should events be triggered on root-most nodes in hierarchy and then cascade down the tree, thereby allowing each parent to bestow on its immediate children necessary context?
 
 ## License
 
