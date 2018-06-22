@@ -1,5 +1,5 @@
 extern crate clap;
-extern crate kintampo_server;
+extern crate kintampo;
 #[macro_use] extern crate log;
 extern crate notify;
 extern crate pretty_env_logger;
