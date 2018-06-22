@@ -14,6 +14,10 @@ use std::sync::mpsc::channel;
 
 use clap::{App, Arg};
 
+fn envelope_from_pathbuf(pb: &str) -> String {
+    pb.replace("/", "_")
+}
+
 fn main() -> Result<(),std::io::Error> {
     pretty_env_logger::init();
 
@@ -40,8 +44,12 @@ fn main() -> Result<(),std::io::Error> {
 
     let publisher = context.socket(zmq::PUB).unwrap();
     publisher
-        .bind("tcp://*:55630")
+        .bind("inproc://*:55630")
         .expect("failed binding zmq publisher");
+    let configurator = context.socket(zmq::REP).unwrap();
+    configurator
+        .bind("inproc://*:55630")
+        .expect("failed binding zmq responder");
 
     let (tx, rx) = channel();
 
@@ -81,28 +89,58 @@ fn main() -> Result<(),std::io::Error> {
                         }
                     });
 
-                    let subscriber = context.socket(zmq::SUB).unwrap();
-                    info!("Subscribing to CREATE and WRITE messages from Kintampo server...");
-                    subscriber
-                        .connect("tcp://localhost:55630")
-                        .expect("failed connecting subscriber");
-                    subscriber
-                        .set_subscribe(b"CREATE")
-                        .expect("failed subscribing to CREATE");
-                    subscriber
-                        .set_subscribe(b"WRITE")
-                        .expect("failed subscribing to WRITE");
+                    // See http://zguide.zeromq.org/page:all#The-Dynamic-Discovery-Problem
+                    let mut backend = context.socket(zmq::XSUB).unwrap();
+                    backend
+                        .connect("inproc://localhost:55630")
+                        .expect("failed connecting dispatcher");
+
+                    // Does the use of XPUB/XSUB let us shuttle both regular messages
+                    // and allow clients hitting this frontend to subscribe to the
+                    // more granular messages available via the internal publisher?
+                    // If so, this is good subordination of detail without hiding.
+                    let mut frontend = context.socket(zmq::XPUB).unwrap();
+                    frontend
+                        .bind("tcp://*:5563")
+                        .expect("failed binding zmq dispatch publisher");
+
+                    // I believe we can't use this directly, because
+                    // we want to manipulate the granularity of messaging.
+                    // let dispatch_proxy = zmq::proxy(&mut frontend, &mut backend);
+
+                    // TODO:
+                    // We need to hit the configurator with a request for
+                    // "all known subscriptions", which is all the directories
+                    // found under the root Kintampo dir, when starting clients.
+                    //
+                    // When new directories are created, the configurator needs
+                    // to gain knowledge of them.
+                    //
+                    // Clients also need to find out about them and open a
+                    // separate socket for each directory.
 
                     loop {
-                        let envelope = subscriber
+                        let envelope = backend
                             .recv_string(0)
                             .expect("failed receiving envelope")
                             .unwrap();
-                        let message = subscriber
+                        let message = backend
                             .recv_string(0)
                             .expect("failed receiving message")
                             .unwrap();
-                        info!("[{}] {}", envelope, message);
+
+                        if envelope == "CREATE" || envelope == "WRITE" {
+                            let path_portion = envelope_from_pathbuf(&message);
+                            let mut new_envelope = String::with_capacity(path_portion.len() + 4);
+                            new_envelope.push_str("NEW/");
+                            new_envelope.push_str(&path_portion);
+                            frontend
+                                .send(new_envelope.as_bytes(), zmq::SNDMORE)
+                                .expect("failed sending NEW/path envelope");
+                            frontend
+                                .send(message.as_bytes(), 0)
+                                .expect("failed sending NEW/path message")
+                        }
                     }
                 },
                 Err(e) => {
