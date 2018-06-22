@@ -35,7 +35,6 @@ fn main() -> Result<(),std::io::Error> {
     let dir = matches.value_of("root_directory").unwrap();
     create_dir_all(dir)?;
 
-    // thread::spawn(|| {
     info!("Watching directory: {:?}", dir);
     let context = zmq::Context::new();
 
@@ -117,5 +116,4 @@ fn main() -> Result<(),std::io::Error> {
             panic!();
         }
     }
-    // Ok(())
 }
