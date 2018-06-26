@@ -8,6 +8,7 @@ extern crate zmq;
 extern crate kintampo;
 
 use std::fs::{create_dir_all};
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
@@ -162,6 +163,7 @@ fn main() -> Result<(),std::io::Error> {
                     // and allow clients hitting this frontend to subscribe to the
                     // more granular messages available via the internal publisher?
                     // If so, this is good subordination of detail without hiding.
+                    info!("Kintampo publishing events on port {}", base_port);
                     let mut frontend = context.socket(zmq::PUB).unwrap();
                     frontend
                         .bind(&format!("tcp://*:{}", base_port))
@@ -230,6 +232,15 @@ fn main() -> Result<(),std::io::Error> {
                                     info!("Client now watching directory: {}",path.to_str().unwrap());
                                 } else {
                                     info!("Client processing NEW file: {}", path.to_str().unwrap());
+                                    let run_file = path.parent().unwrap().join("run.sh");
+                                    if run_file.exists() {
+                                        let output = std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(run_file)
+                                            .output()
+                                            .expect("failed to run");
+                                        println!("OUTPUT: {:?}", output.stdout);
+                                    }
                                 }
                             },
                             _ => trace!("Client doesn't handled {:?} yet.", op)
