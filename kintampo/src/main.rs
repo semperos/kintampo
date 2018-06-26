@@ -1,9 +1,18 @@
 extern crate clap;
-extern crate kintampo;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate notify;
 extern crate pretty_env_logger;
+extern crate walkdir;
 extern crate zmq;
+
+extern crate kintampo;
+
+use walkdir::{DirEntry, WalkDir};
+
+fn is_directory(entry: &DirEntry) -> bool {
+    entry.file_type().is_dir()
+}
 
 use std::fs::create_dir_all;
 use std::thread;
@@ -16,6 +25,23 @@ use clap::{App, Arg};
 
 fn envelope_from_pathbuf(pb: &str) -> String {
     pb.replace("/", "_")
+}
+
+fn ask_configurator_for_directories(context: &zmq::Context, configurator_port: &str) -> Vec<String> {
+    trace!("Creating configurator client...");
+    let config_client = context.socket(zmq::REQ).unwrap();
+    let mut msg_buffer = zmq::Message::new().unwrap();
+    config_client
+        .connect(&format!("tcp://localhost:{}", configurator_port))
+        .expect("failed connecting client to frontend");
+    trace!("Sending topology request...");
+    config_client.send(b"topology", 0).unwrap();
+    trace!("Time to get topology response...");
+    config_client.recv(&mut msg_buffer, 0).unwrap();
+    trace!("Woohoo!");
+    let msg = msg_buffer.as_str().unwrap();
+    info!("Config client received: {}", msg);
+    kintampo::parse_edn_vector(msg)
 }
 
 fn main() -> Result<(),std::io::Error> {
@@ -34,22 +60,60 @@ fn main() -> Result<(),std::io::Error> {
                 .help("The root directory for Kintampo to watch.")
                 .default_value("/tmp/kintampo")
         )
+        .arg(
+            Arg::with_name("port")
+                .short("p")
+                .long("port")
+                .value_name("PORT")
+                .required(false)
+                .help("The main port to use for publishing data events.")
+                .default_value("5563")
+        )
         .get_matches();
 
     let dir = matches.value_of("root_directory").unwrap();
     create_dir_all(dir)?;
 
+    let base_port = matches.value_of("port").unwrap();
+    let configurator_port = format!("{}0", base_port);
+    let publisher_port = format!("{}1", base_port);
+
     info!("Watching directory: {:?}", dir);
     let context = zmq::Context::new();
 
-    let publisher = context.socket(zmq::PUB).unwrap();
-    publisher
-        .bind("inproc://*:55630")
-        .expect("failed binding zmq publisher");
     let configurator = context.socket(zmq::REP).unwrap();
     configurator
-        .bind("inproc://*:55630")
-        .expect("failed binding zmq responder");
+        .bind(&format!("tcp://*:{}", configurator_port))
+        .expect("failed binding zmq configurator");
+
+    let mut configurator_msg = zmq::Message::new().unwrap();
+    let walk_target = dir.to_owned();
+    thread::spawn(move || {
+        loop {
+            configurator.recv(&mut configurator_msg, 0).unwrap();
+            trace!("Configurator received!");
+            let msg = configurator_msg.as_str().unwrap();
+            trace!("Configurator received {}", msg);
+            if msg == "topology" {
+                let walker = WalkDir::new(&walk_target).into_iter();
+                let mut paths: Vec<String> = vec![];
+                for entry in walker.filter_entry(|e| is_directory(e)) {
+                    let entry: walkdir::DirEntry = entry.unwrap();
+                    trace!("{}", entry.path().display());
+                    let path = entry.path().to_str().unwrap();
+                    paths.push(format!("\"{}\"",path));
+                }
+                configurator.send(format!("[{}]",paths.join(",")).as_bytes(), 0).unwrap();
+            } else {
+                configurator.send(b"Unsupported operation", 0).unwrap();
+            }
+        }
+    });
+
+    let publisher = context.socket(zmq::PUB).unwrap();
+    publisher
+        .bind(&format!("inproc://*:{}", publisher_port))
+        .expect("failed binding zmq publisher");
 
     let (tx, rx) = channel();
 
@@ -92,7 +156,7 @@ fn main() -> Result<(),std::io::Error> {
                     // See http://zguide.zeromq.org/page:all#The-Dynamic-Discovery-Problem
                     let mut backend = context.socket(zmq::XSUB).unwrap();
                     backend
-                        .connect("inproc://localhost:55630")
+                        .connect(&format!("inproc://localhost:{}", publisher_port))
                         .expect("failed connecting dispatcher");
 
                     // Does the use of XPUB/XSUB let us shuttle both regular messages
@@ -101,7 +165,7 @@ fn main() -> Result<(),std::io::Error> {
                     // If so, this is good subordination of detail without hiding.
                     let mut frontend = context.socket(zmq::XPUB).unwrap();
                     frontend
-                        .bind("tcp://*:5563")
+                        .bind(&format!("tcp://*:{}", base_port))
                         .expect("failed binding zmq dispatch publisher");
 
                     // I believe we can't use this directly, because
@@ -119,29 +183,41 @@ fn main() -> Result<(),std::io::Error> {
                     // Clients also need to find out about them and open a
                     // separate socket for each directory.
 
-                    loop {
-                        let envelope = backend
-                            .recv_string(0)
-                            .expect("failed receiving envelope")
-                            .unwrap();
-                        let message = backend
-                            .recv_string(0)
-                            .expect("failed receiving message")
-                            .unwrap();
+                    thread::spawn(move || {
+                        loop {
+                            let envelope = backend
+                                .recv_string(0)
+                                .expect("failed receiving envelope")
+                                .unwrap();
+                            let message = backend
+                                .recv_string(0)
+                                .expect("failed receiving message")
+                                .unwrap();
 
-                        if envelope == "CREATE" || envelope == "WRITE" {
-                            let path_portion = envelope_from_pathbuf(&message);
-                            let mut new_envelope = String::with_capacity(path_portion.len() + 4);
-                            new_envelope.push_str("NEW/");
-                            new_envelope.push_str(&path_portion);
-                            frontend
-                                .send(new_envelope.as_bytes(), zmq::SNDMORE)
-                                .expect("failed sending NEW/path envelope");
-                            frontend
-                                .send(message.as_bytes(), 0)
-                                .expect("failed sending NEW/path message")
+                            if envelope == "CREATE" || envelope == "WRITE" {
+                                let path_portion = envelope_from_pathbuf(&message);
+                                let mut new_envelope = String::with_capacity(path_portion.len() + 4);
+                                new_envelope.push_str("NEW/");
+                                new_envelope.push_str(&path_portion);
+                                frontend
+                                    .send(new_envelope.as_bytes(), zmq::SNDMORE)
+                                    .expect("failed sending NEW/path envelope");
+                                frontend
+                                    .send(message.as_bytes(), 0)
+                                    .expect("failed sending NEW/path message")
+                            }
                         }
-                    }
+                    });
+
+                    // Client that connects to the `frontend`
+                    let mut client = context.socket(zmq::SUB).unwrap();
+                    client
+                        .connect(&format!("tcp://localhost:{}", base_port))
+                        .expect("failed connecting client to frontend");
+                    trace!("Asking configurator for topology...");
+                    let _directories = ask_configurator_for_directories(&context, &configurator_port);
+                    trace!("Dirs! {:?}", _directories);
+                    Ok(())
                 },
                 Err(e) => {
                     error!("Unable to start filesystem watcher on directory {}: {:?}", dir, e);
