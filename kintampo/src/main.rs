@@ -3,18 +3,11 @@ extern crate clap;
 extern crate log;
 extern crate notify;
 extern crate pretty_env_logger;
-extern crate walkdir;
 extern crate zmq;
 
 extern crate kintampo;
 
-use walkdir::{DirEntry, WalkDir};
-
-fn is_directory(entry: &DirEntry) -> bool {
-    entry.file_type().is_dir()
-}
-
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all};
 use std::thread;
 use std::time::Duration;
 
@@ -23,22 +16,14 @@ use std::sync::mpsc::channel;
 
 use clap::{App, Arg};
 
-fn envelope_from_pathbuf(pb: &str) -> String {
-    pb.replace("/", "_")
-}
-
 fn ask_configurator_for_directories(context: &zmq::Context, configurator_port: &str) -> Vec<String> {
-    trace!("Creating configurator client...");
     let config_client = context.socket(zmq::REQ).unwrap();
     let mut msg_buffer = zmq::Message::new().unwrap();
     config_client
         .connect(&format!("tcp://localhost:{}", configurator_port))
         .expect("failed connecting client to frontend");
-    trace!("Sending topology request...");
     config_client.send(b"topology", 0).unwrap();
-    trace!("Time to get topology response...");
     config_client.recv(&mut msg_buffer, 0).unwrap();
-    trace!("Woohoo!");
     let msg = msg_buffer.as_str().unwrap();
     info!("Config client received: {}", msg);
     kintampo::parse_edn_vector(msg)
@@ -58,7 +43,7 @@ fn main() -> Result<(),std::io::Error> {
                 .value_name("ROOT_DIRECTORY_TO_WATCH")
                 .required(false)
                 .help("The root directory for Kintampo to watch.")
-                .default_value("/tmp/kintampo")
+                .default_value("kintampo_root")
         )
         .arg(
             Arg::with_name("port")
@@ -72,13 +57,17 @@ fn main() -> Result<(),std::io::Error> {
         .get_matches();
 
     let dir = matches.value_of("root_directory").unwrap();
+    // Note: depending on platform (?), this may occur
+    // after all the ZeroMQ machinery is already running,
+    // and so it will trigger events.
     create_dir_all(dir)?;
+    let abs_dir = std::fs::canonicalize(dir).unwrap();
 
     let base_port = matches.value_of("port").unwrap();
     let configurator_port = format!("{}0", base_port);
     let publisher_port = format!("{}1", base_port);
 
-    info!("Watching directory: {:?}", dir);
+    info!("Watching directory: {:?}", abs_dir);
     let context = zmq::Context::new();
 
     let configurator = context.socket(zmq::REP).unwrap();
@@ -87,22 +76,25 @@ fn main() -> Result<(),std::io::Error> {
         .expect("failed binding zmq configurator");
 
     let mut configurator_msg = zmq::Message::new().unwrap();
-    let walk_target = dir.to_owned();
+    let walk_target = abs_dir.to_owned();
     thread::spawn(move || {
         loop {
             configurator.recv(&mut configurator_msg, 0).unwrap();
-            trace!("Configurator received!");
             let msg = configurator_msg.as_str().unwrap();
-            trace!("Configurator received {}", msg);
             if msg == "topology" {
-                let walker = WalkDir::new(&walk_target).into_iter();
-                let mut paths: Vec<String> = vec![];
-                for entry in walker.filter_entry(|e| is_directory(e)) {
-                    let entry: walkdir::DirEntry = entry.unwrap();
-                    trace!("{}", entry.path().display());
-                    let path = entry.path().to_str().unwrap();
-                    paths.push(format!("\"{}\"",path));
-                }
+                // LET IT BE KNOWN
+                // ZeroMQ subscriptions to a _prefix_ match,
+                // which in our case (since we're establishing
+                // subscriptions based on path hierarchies)
+                // means we only need to set a ZeroMQ subscriber
+                // on the root directory.
+                //
+                // Will leave this in place, as there may be a
+                // good use-case for having multiple separate
+                // Kintampo roots, so keeping the initial
+                // subscription process flexible on this front
+                // is good for now.
+                let paths = kintampo::all_dirs(&walk_target);
                 configurator.send(format!("[{}]",paths.join(",")).as_bytes(), 0).unwrap();
             } else {
                 configurator.send(b"Unsupported operation", 0).unwrap();
@@ -112,15 +104,16 @@ fn main() -> Result<(),std::io::Error> {
 
     let publisher = context.socket(zmq::PUB).unwrap();
     publisher
-        .bind(&format!("inproc://*:{}", publisher_port))
+        .bind(&format!("tcp://*:{}", publisher_port))
         .expect("failed binding zmq publisher");
 
     let (tx, rx) = channel();
 
     let mut watcher: Result<RecommendedWatcher, notify::Error> = Watcher::new(tx, Duration::from_secs(1));
+    let root_watch_dir = abs_dir.to_owned();
     match watcher {
         Ok(ref mut watcher) => {
-            match watcher.watch(dir, RecursiveMode::Recursive) {
+            match watcher.watch(root_watch_dir, RecursiveMode::Recursive) {
                 Ok(_) => {
                     thread::spawn(move || {
                         loop {
@@ -145,7 +138,7 @@ fn main() -> Result<(),std::io::Error> {
                                                 .send(pathbuf.to_str().unwrap().as_bytes(), 0)
                                                 .expect("failed sending message for file write");
                                         }
-                                        _ => trace!("Sorry, don't handle {:?} yet.", event),
+                                        _ => warn!("Sorry, don't handle {:?} yet.", event),
                                     }
                                 }
                                 Err(e) => error!("watch error: {:?}", e),
@@ -154,16 +147,22 @@ fn main() -> Result<(),std::io::Error> {
                     });
 
                     // See http://zguide.zeromq.org/page:all#The-Dynamic-Discovery-Problem
-                    let mut backend = context.socket(zmq::XSUB).unwrap();
+                    let mut backend = context.socket(zmq::SUB).unwrap();
                     backend
-                        .connect(&format!("inproc://localhost:{}", publisher_port))
+                        .connect(&format!("tcp://localhost:{}", publisher_port))
                         .expect("failed connecting dispatcher");
+                    backend
+                        .set_subscribe(b"CREATE")
+                        .expect("failed to subscribe to CREATE events");
+                    backend
+                        .set_subscribe(b"WRITE")
+                        .expect("failed to subscribe to WRITE events");
 
                     // Does the use of XPUB/XSUB let us shuttle both regular messages
                     // and allow clients hitting this frontend to subscribe to the
                     // more granular messages available via the internal publisher?
                     // If so, this is good subordination of detail without hiding.
-                    let mut frontend = context.socket(zmq::XPUB).unwrap();
+                    let mut frontend = context.socket(zmq::PUB).unwrap();
                     frontend
                         .bind(&format!("tcp://*:{}", base_port))
                         .expect("failed binding zmq dispatch publisher");
@@ -171,17 +170,6 @@ fn main() -> Result<(),std::io::Error> {
                     // I believe we can't use this directly, because
                     // we want to manipulate the granularity of messaging.
                     // let dispatch_proxy = zmq::proxy(&mut frontend, &mut backend);
-
-                    // TODO:
-                    // We need to hit the configurator with a request for
-                    // "all known subscriptions", which is all the directories
-                    // found under the root Kintampo dir, when starting clients.
-                    //
-                    // When new directories are created, the configurator needs
-                    // to gain knowledge of them.
-                    //
-                    // Clients also need to find out about them and open a
-                    // separate socket for each directory.
 
                     thread::spawn(move || {
                         loop {
@@ -195,10 +183,7 @@ fn main() -> Result<(),std::io::Error> {
                                 .unwrap();
 
                             if envelope == "CREATE" || envelope == "WRITE" {
-                                let path_portion = envelope_from_pathbuf(&message);
-                                let mut new_envelope = String::with_capacity(path_portion.len() + 4);
-                                new_envelope.push_str("NEW/");
-                                new_envelope.push_str(&path_portion);
+                                let new_envelope = kintampo::new_path_envelope(&message);
                                 frontend
                                     .send(new_envelope.as_bytes(), zmq::SNDMORE)
                                     .expect("failed sending NEW/path envelope");
@@ -214,10 +199,42 @@ fn main() -> Result<(),std::io::Error> {
                     client
                         .connect(&format!("tcp://localhost:{}", base_port))
                         .expect("failed connecting client to frontend");
-                    trace!("Asking configurator for topology...");
-                    let _directories = ask_configurator_for_directories(&context, &configurator_port);
-                    trace!("Dirs! {:?}", _directories);
-                    Ok(())
+                    let directories = ask_configurator_for_directories(&context, &configurator_port);
+                    let envelopes: Vec<String> = directories
+                        .into_iter()
+                        .map(|d| kintampo::new_path_envelope(&d))
+                        .collect();
+                    for envelope in envelopes {
+                        trace!("Client subscribing to {}", envelope);
+                        client
+                            .set_subscribe(envelope.as_bytes())
+                            .expect(&format!("client failed to subscribe to {}", envelope));
+                    }
+                    loop {
+                        let envelope = client
+                            .recv_string(0)
+                            .expect("failed receiving client envelope")
+                            .unwrap();
+                        let message = client
+                            .recv_string(0)
+                            .expect("failed receiving client message")
+                            .unwrap();
+
+                        let (op, path) = kintampo::parse_envelope(&envelope);
+                        match op.as_ref() {
+                            "NEW" => {
+                                if path.is_dir() {
+                                    // ZeroMQ subscriptions are prefix-based,
+                                    // so this client will already handle
+                                    // this new sub-directory.
+                                    info!("Client now watching directory: {}",path.to_str().unwrap());
+                                } else {
+                                    info!("Client processing NEW file: {}", path.to_str().unwrap());
+                                }
+                            },
+                            _ => trace!("Client doesn't handled {:?} yet.", op)
+                        }
+                    }
                 },
                 Err(e) => {
                     error!("Unable to start filesystem watcher on directory {}: {:?}", dir, e);
