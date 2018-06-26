@@ -37,8 +37,8 @@ Example use-cases:
 
 ## In Progress
 
--[ ] Consider how the server should publish file system changes at the ZMQ level: just raw path, canonical hierarchial representation of the file/directory changed, separate messages for each node in that hierarchy or just one node (in which case likely want an "interface component" responsible for exploding that one message into many so that clients can be completely decoupled from one another)
--[ ] Consider the parent-child vs child-parent vs. cross-cutting subscriptions data flow. If a client is subscribed to messages for a given directory, should that client have to go up any directories to find things like common config options meant to be shared by sibling directories? Should events be triggered on root-most nodes in hierarchy and then cascade down the tree, thereby allowing each parent to bestow on its immediate children necessary context?
+- [ ] Consider how the server should publish file system changes at the ZMQ level: just raw path, canonical hierarchial representation of the file/directory changed, separate messages for each node in that hierarchy or just one node (in which case likely want an "interface component" responsible for exploding that one message into many so that clients can be completely decoupled from one another)
+- [ ] Consider the parent-child vs child-parent vs. cross-cutting subscriptions data flow. If a client is subscribed to messages for a given directory, should that client have to go up any directories to find things like common config options meant to be shared by sibling directories? Should events be triggered on root-most nodes in hierarchy and then cascade down the tree, thereby allowing each parent to bestow on its immediate children necessary context?
 
 ## License
 
